@@ -1,6 +1,6 @@
-# NetProbe: Distributed P2P Disruptor Detector
+# NetProbe: Distributed P2P Disruptor Detector (TUI)
 
-NetProbe is a lightweight, decentralized monitoring tool built in Rust. It runs as a background service on Windows machines to detect RF interference and WiFi performance drops across a local network using a P2P mesh architecture.
+NetProbe is a lightweight, decentralized monitoring tool built in Rust. It runs as a background service on Windows machines to detect RF interference and WiFi performance drops across a local network using a P2P mesh architecture, now with a rich Terminal User Interface (TUI).
 
 ## Features
 
@@ -8,14 +8,19 @@ NetProbe is a lightweight, decentralized monitoring tool built in Rust. It runs 
 - **Automatic Discovery**: Uses **mDNS** to automatically find and connect to other NetProbe nodes on the same LAN.
 - **WiFi Health Monitoring**: Periodically polls the Windows WLAN API (via `netsh`) to track Signal Strength and Link Rates.
 - **Real-time Alerts**: Utilizes **Gossipsub** to propagate "Interference Detected" alerts across the mesh when a node's signal quality drops below a threshold.
-- **Triangulation Ready**: By sharing local noise levels, multiple nodes can help identify the physical location of a disruptor.
+- **Rich TUI Dashboard**: A real-time terminal interface powered by `ratatui` and `crossterm`.
+    - **Signal Gauge**: Visual representation of current signal strength and moving average.
+    - **Interface Info**: Detailed BSSID, Channel, and RX/TX rates.
+    - **Peer List**: Real-time view of discovered nodes in the mesh.
+    - **Alert History**: Scrollable history of received interference alerts from peers.
+    - **Live Logs**: Application status and network event logs.
 
 ## How it Works
 
-1. **Local Probe**: Each node runs `netsh wlan show interfaces` every 15 seconds.
-2. **Threshold Check**: If the Signal Quality drops below 70%, the node considers the environment "disrupted."
+1. **Local Probe**: Each node polls `netsh wlan show interfaces` based on the configured interval.
+2. **Threshold Check**: If the Signal Quality drops below the configured threshold, the node considers the environment "disrupted."
 3. **Gossip**: The affected node signs and broadcasts a JSON alert to the `disruptor-alerts` topic.
-4. **Peer Awareness**: All nodes in the mesh receive the alert and log the Peer ID and signal level of the affected machine.
+4. **Peer Awareness**: All nodes in the mesh receive the alert and display it in the TUI's alert history.
 
 ## Prerequisites
 
@@ -32,24 +37,28 @@ cd netprobe
 cargo build --release
 ```
 
-### 2. Run
+### 2. Configuration
+On the first run, a `config.json` file will be created in the application directory. You can customize the following settings:
+- `poll_interval_secs`: How often to check the WiFi status (default: 15).
+- `signal_threshold`: The signal percentage below which an alert is triggered (default: 70).
+- `moving_average_window`: Number of samples to use for the signal average (default: 3).
+
+### 3. Run
 ```powershell
 ./target/release/netprobe.exe
 ```
+*Press **'q'** at any time to quit the TUI.*
 
-### 3. Firewall Setup
-Ensure that the Windows Defender Firewall allows the binary to communicate. By default, it will listen on a random TCP port for P2P traffic. In a production environment, you may want to bind to a specific port (e.g., `4001`) and open it.
+### 4. Firewall Setup
+Ensure that the Windows Defender Firewall allows the binary to communicate. It listens on a random TCP port for P2P traffic.
 
 ## Architecture
 
-- **Transport**: TCP + QUIC.
-- **Security**: Noise protocol (ED25519 keys).
-- **Multiplexing**: Yamux.
+- **UI Framework**: Ratatui + Crossterm.
+- **Networking**: libp2p (TCP, QUIC, Noise, Yamux).
 - **Messaging**: Gossipsub.
 - **Discovery**: mDNS.
-
-## Monitoring Thresholds
-The default threshold for an alert is **70% signal quality**. This can be adjusted in `src/main.rs` within the `poll_interval` loop.
+- **Runtime**: Tokio (Asynchronous).
 
 ## License
 MIT
