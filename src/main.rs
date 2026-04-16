@@ -1,180 +1,108 @@
 mod wifi;
 mod config;
+mod app;
+mod network;
 
 use std::error::Error;
+use std::io::stdout;
+use tokio::sync::mpsc;
+use serde::{Deserialize, Serialize};
+use crossterm::{
+    event::{Event, KeyCode, EventStream},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{prelude::*, Terminal};
 use std::time::Duration;
 use futures::StreamExt;
-use libp2p::{
-    gossipsub, mdns, noise, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp, yamux,
-};
-use tokio::time;
-use serde::{Deserialize, Serialize};
-use chrono::Utc;
-use tracing::{info, warn, error};
-use tracing_subscriber;
+use crate::app::App;
+use crate::network::NetworkEvent;
 
-#[derive(NetworkBehaviour)]
-struct MyBehaviour {
-    gossipsub: gossipsub::Behaviour,
-    mdns: mdns::tokio::Behaviour,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct ProbeAlert {
-    peer_id: String,
-    signal: u32,
-    avg_signal: f32,
-    bssid: String,
-    channel: u32,
-    timestamp: i64,
-}
-
-struct SignalHistory {
-    values: Vec<u32>,
-    window_size: usize,
-}
-
-impl SignalHistory {
-    fn new(window_size: usize) -> Self {
-        Self {
-            values: Vec::new(),
-            window_size,
-        }
-    }
-
-    fn add(&mut self, val: u32) -> f32 {
-        self.values.push(val);
-        if self.values.len() > self.window_size {
-            self.values.remove(0);
-        }
-        let sum: u32 = self.values.iter().sum();
-        sum as f32 / self.values.len() as f32
-    }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProbeAlert {
+    pub peer_id: String,
+    pub signal: u32,
+    pub avg_signal: f32,
+    pub bssid: String,
+    pub channel: u32,
+    pub timestamp: i64,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // 5. Logging Framework
-    tracing_subscriber::fmt::init();
+    // 1. Setup Terminal
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
-    // 1. Configurable Thresholds
+    // 2. Initialize App State
     let config = config::load_config();
-    info!("Configuration loaded: {:?}", config);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    
+    let mut app = App::new("Initializing...".to_string(), config);
 
-    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
-        .with_tokio()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
-        .with_quic()
-        .with_behaviour(|key: &libp2p::identity::Keypair| {
-            let gossipsub_config = gossipsub::ConfigBuilder::default()
-                .heartbeat_interval(Duration::from_secs(10))
-                .validation_mode(gossipsub::ValidationMode::Strict)
-                .build()
-                .map_err(|msg| std::io::Error::new(std::io::ErrorKind::Other, msg))?;
+    // 3. Spawn Network Task
+    tokio::spawn(async move {
+        if let Err(e) = network::run_network(tx.clone()).await {
+            let _ = tx.send(NetworkEvent::Log(format!("Network Error: {:?}", e)));
+        }
+    });
 
-            let gossipsub = gossipsub::Behaviour::new(
-                gossipsub::MessageAuthenticity::Signed(key.clone()),
-                gossipsub_config,
-            )?;
-
-            let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
-            Ok(MyBehaviour { gossipsub, mdns })
-        })?
-        .with_swarm_config(|c: libp2p::swarm::Config| c.with_idle_connection_timeout(Duration::from_secs(60)))
-        .build();
-
-    let topic = gossipsub::IdentTopic::new("disruptor-alerts");
-    swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-
-    let mut poll_interval = time::interval(Duration::from_secs(config.poll_interval_secs));
-    let peer_id_str = swarm.local_peer_id().to_string();
-
-    // 2. Moving Average
-    let mut history = SignalHistory::new(config.moving_average_window);
-
-    info!("Local Peer ID: {:?}", peer_id_str);
+    // 4. Main UI Loop
+    let mut tick_interval = tokio::time::interval(Duration::from_millis(250));
+    let mut events = EventStream::new();
 
     loop {
+        terminal.draw(|f| app.ui(f))?;
+
         tokio::select! {
-            // 3. Graceful Shutdown
-            _ = tokio::signal::ctrl_c() => {
-                info!("Shutdown signal received. Cleaning up...");
-                break;
+            _ = tick_interval.tick() => {
+                // Background updates if any
             }
-            _ = poll_interval.tick() => {
-                info!("Polling local WiFi stats...");
-                match wifi::get_interface_data() {
-                    Ok(stats) => {
-                        let avg_signal = history.add(stats.signal);
-                        info!("WiFi Stats: Signal {}% (Avg {:.1}%), BSSID {}, Channel {}", 
-                                 stats.signal, avg_signal, stats.bssid, stats.channel);
-                        
-                        // Use Configurable Threshold
-                        if avg_signal < config.signal_threshold as f32 {
-                            let alert = ProbeAlert {
-                                peer_id: peer_id_str.clone(),
-                                signal: stats.signal,
-                                avg_signal,
-                                bssid: stats.bssid,
-                                channel: stats.channel,
-                                timestamp: Utc::now().timestamp(),
-                            };
-                            let alert_json = serde_json::to_string(&alert)?;
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), alert_json.as_bytes()) {
-                                error!("Gossipsub publish error: {:?}", e);
-                            } else {
-                                warn!("!!! Published Alert: Signal drop detected (Avg {:.1}%) !!!", avg_signal);
+            event = rx.recv() => {
+                if let Some(network_event) = event {
+                    match network_event {
+                        NetworkEvent::StatsUpdate(stats, avg) => {
+                            app.wifi_stats = Some(stats);
+                            app.avg_signal = avg;
+                        }
+                        NetworkEvent::AlertReceived(alert) => {
+                            app.add_alert(alert);
+                        }
+                        NetworkEvent::PeerDiscovered(peer_id) => {
+                            app.peers.insert(peer_id);
+                        }
+                        NetworkEvent::PeerExpired(peer_id) => {
+                            app.peers.remove(&peer_id);
+                        }
+                        NetworkEvent::Log(msg) => {
+                            if msg.contains("Local Peer ID:") {
+                                app.local_peer_id = msg.replace("Local Peer ID: ", "");
                             }
+                            app.add_log(msg);
                         }
                     }
-                    Err(e) => error!("Error accessing WLAN API: {:?}", e),
                 }
             }
-            event = swarm.select_next_some() => match event {
-                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                    for (peer_id, _multiaddr) in list {
-                        info!("mDNS discovered a new peer: {peer_id}");
-                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+            maybe_event = events.next() => {
+                if let Some(Ok(Event::Key(key))) = maybe_event {
+                    if let KeyCode::Char('q') = key.code {
+                        app.should_quit = true;
                     }
-                },
-                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                    for (peer_id, _multiaddr) in list {
-                        info!("mDNS discovered peer has expired: {peer_id}");
-                        swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
-                    }
-                },
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    propagation_source: peer_id,
-                    message_id: _id,
-                    message,
-                })) => {
-                    let msg_content = String::from_utf8_lossy(&message.data);
-                    if let Ok(alert) = serde_json::from_str::<ProbeAlert>(&msg_content) {
-                        warn!("!!! ALERT FROM PEER {} !!!", alert.peer_id);
-                        warn!("--- Signal level: {}% (Avg {:.1}%)", alert.signal, alert.avg_signal);
-                        warn!("--- BSSID: {}, Channel: {}", alert.bssid, alert.channel);
-                        warn!("--- Timestamp: {}", alert.timestamp);
-                    } else {
-                        info!("Received unknown Gossipsub message from {peer_id}: {msg_content}");
-                    }
-                },
-                SwarmEvent::NewListenAddr { address, .. } => {
-                    info!("Local node is listening on {address}");
                 }
-                SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                    info!("Connection closed with peer: {peer_id}");
-                    swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
-                }
-                _ => {}
             }
         }
+
+        if app.should_quit {
+            break;
+        }
     }
+
+    // 5. Cleanup
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     
     Ok(())
 }
