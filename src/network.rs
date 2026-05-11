@@ -4,9 +4,20 @@ use libp2p::{
 use std::error::Error;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::{config, wifi, ProbeAlert};
+use crate::{config, wifi};
 use chrono::Utc;
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProbeAlert {
+    pub peer_id: String,
+    pub signal: u32,
+    pub avg_signal: f32,
+    pub bssid: String,
+    pub channel: u32,
+    pub timestamp: i64,
+}
 
 #[derive(NetworkBehaviour)]
 pub struct MyBehaviour {
@@ -20,6 +31,27 @@ pub enum NetworkEvent {
     PeerDiscovered(String),
     PeerExpired(String),
     Log(String),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum GossipMessage {
+    WifiAlert(ProbeAlert),
+    HardwareAlert {
+        dev: String,
+        ch: u8,
+        pwr: i16,
+        r#type: String,
+        timestamp: i64,
+    },
+}
+
+pub enum NetworkCommand {
+    PublishHardwareAlert {
+        dev: String,
+        ch: u8,
+        pwr: i16,
+        r#type: String,
+    },
 }
 
 pub struct SignalHistory {
@@ -47,6 +79,7 @@ impl SignalHistory {
 
 pub async fn run_network(
     tx: mpsc::UnboundedSender<NetworkEvent>,
+    mut cmd_rx: mpsc::UnboundedReceiver<NetworkCommand>,
 ) -> Result<(), Box<dyn Error>> {
     let config = config::load_config();
     let _ = tx.send(NetworkEvent::Log("Configuration loaded".to_string()));
@@ -105,8 +138,9 @@ pub async fn run_network(
                                 channel: stats.channel,
                                 timestamp: Utc::now().timestamp(),
                             };
-                            let alert_json = serde_json::to_string(&alert)?;
-                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), alert_json.as_bytes()) {
+                            let msg = GossipMessage::WifiAlert(alert);
+                            let msg_json = serde_json::to_string(&msg)?;
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_json.as_bytes()) {
                                 let _ = tx.send(NetworkEvent::Log(format!("Gossipsub publish error: {:?}", e)));
                             } else {
                                 let _ = tx.send(NetworkEvent::Log(format!("Published Alert: Signal drop detected (Avg {:.1}%)", avg_signal)));
@@ -115,6 +149,24 @@ pub async fn run_network(
                     }
                     Err(e) => {
                         let _ = tx.send(NetworkEvent::Log(format!("Error accessing WLAN API: {:?}", e)));
+                    }
+                }
+            }
+            cmd = cmd_rx.recv() => {
+                if let Some(NetworkCommand::PublishHardwareAlert { dev, ch, pwr, r#type }) = cmd {
+                    let msg = GossipMessage::HardwareAlert {
+                        dev,
+                        ch,
+                        pwr,
+                        r#type,
+                        timestamp: Utc::now().timestamp(),
+                    };
+                    if let Ok(msg_json) = serde_json::to_string(&msg) {
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_json.as_bytes()) {
+                            let _ = tx.send(NetworkEvent::Log(format!("Gossipsub publish error (hardware): {:?}", e)));
+                        } else {
+                            let _ = tx.send(NetworkEvent::Log(format!("Published Hardware Alert from {}", msg_json)));
+                        }
                     }
                 }
             }
@@ -141,10 +193,26 @@ pub async fn run_network(
                     ..
                 })) => {
                     let msg_content = String::from_utf8_lossy(&message.data);
-                    if let Ok(alert) = serde_json::from_str::<ProbeAlert>(&msg_content) {
-                        let _ = tx.send(NetworkEvent::AlertReceived(alert));
-                    } else {
-                        let _ = tx.send(NetworkEvent::Log(format!("Received unknown Gossipsub message from {}", peer_id)));
+                    match serde_json::from_str::<GossipMessage>(&msg_content) {
+                        Ok(GossipMessage::WifiAlert(alert)) => {
+                            let _ = tx.send(NetworkEvent::AlertReceived(alert));
+                        }
+                        Ok(GossipMessage::HardwareAlert { dev, ch, pwr, r#type, timestamp }) => {
+                            // Map hardware alert to ProbeAlert for UI simplicity, or update UI to handle hardware alerts
+                            let alert = ProbeAlert {
+                                peer_id: format!("HW:{}", dev),
+                                signal: pwr.abs() as u32, // use pwr as signal
+                                avg_signal: pwr as f32,
+                                bssid: r#type,
+                                channel: ch as u32,
+                                timestamp,
+                            };
+                            let _ = tx.send(NetworkEvent::AlertReceived(alert));
+                        }
+                        Err(_) => {
+                            // Fallback for old message format if needed, but here we just log it
+                            let _ = tx.send(NetworkEvent::Log(format!("Received unknown Gossipsub message from {}", peer_id)));
+                        }
                     }
                 },
                 SwarmEvent::NewListenAddr { address, .. } => {
@@ -161,3 +229,4 @@ pub async fn run_network(
         }
     }
 }
+

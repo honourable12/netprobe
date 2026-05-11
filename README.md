@@ -7,7 +7,8 @@ NetProbe is a lightweight, decentralized monitoring tool built in Rust. It runs 
 - **P2P Mesh Network**: Built with `libp2p`, allowing nodes to communicate without a central server.
 - **Automatic Discovery**: Uses **mDNS** to automatically find and connect to other NetProbe nodes on the same LAN.
 - **WiFi Health Monitoring**: Periodically polls the Windows WLAN API (via `netsh`) to track Signal Strength and Link Rates.
-- **Real-time Alerts**: Utilizes **Gossipsub** to propagate "Interference Detected" alerts across the mesh when a node's signal quality drops below a threshold.
+- **Hardware Sentinel Support**: Integrates with external ESP32-based "Silicon Sentinel" nodes via a built-in UDP bridge.
+- **Real-time Alerts**: Utilizes **Gossipsub** to propagate "Interference Detected" alerts across the mesh when either a software or hardware node detects disruption.
 - **Rich TUI Dashboard**: A real-time terminal interface powered by `ratatui` and `crossterm`.
     - **Signal Gauge**: Visual representation of current signal strength and moving average.
     - **Interface Info**: Detailed BSSID, Channel, and RX/TX rates.
@@ -51,6 +52,14 @@ On the first run, a `config.json` file will be created in the application direct
 
 ### 4. Firewall Setup
 Ensure that the Windows Defender Firewall allows the binary to communicate. It listens on a random TCP port for P2P traffic.
+
+## Hardware Integration (Silicon Sentinel)
+
+NetProbe supports dedicated hardware sensors built using the **ESP32** and **nRF24L01+**. These nodes perform hardware-level RF scanning and report interference directly to any NetProbe node via UDP.
+
+- **UDP Bridge**: NetProbe listens on **UDP Port 4001** for incoming hardware sensor data.
+- **Hardware Payload**: ESP32 Sentinels broadcast JSON payloads containing device ID, status, and detected RF anomalies.
+- **Wiring & Design**: See [hardwarde_design.md](./hardwarde_design.md) for the complete schematic and component list.
 
 ## Architecture
 

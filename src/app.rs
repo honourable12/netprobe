@@ -1,6 +1,6 @@
 use crate::wifi::WifiStats;
 use crate::config::Config;
-use crate::ProbeAlert;
+use crate::network::ProbeAlert;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -143,7 +143,7 @@ impl App {
                 let content = vec![
                     Line::from(vec![
                         Span::styled(format!("[{}] ALERT from ", time), Style::default().fg(Color::Red)),
-                        Span::styled(&a.peer_id[..8], Style::default().fg(Color::Yellow)),
+                        Span::styled(if a.peer_id.len() > 8 { &a.peer_id[..8] } else { &a.peer_id }, Style::default().fg(Color::Yellow)),
                         Span::raw(format!(": Sig {}% (Avg {:.1}%)", a.signal, a.avg_signal)),
                     ]),
                     Line::from(vec![
