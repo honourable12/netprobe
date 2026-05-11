@@ -59,7 +59,7 @@ NetProbe supports dedicated hardware sensors built using the **ESP32** and **nRF
 
 - **UDP Bridge**: NetProbe listens on **UDP Port 4001** for incoming hardware sensor data.
 - **Hardware Payload**: ESP32 Sentinels broadcast JSON payloads containing device ID, status, and detected RF anomalies.
-- **Wiring & Design**: See [hardwarde_design.md](./hardwarde_design.md) for the complete schematic and component list.
+- **Wiring & Design**: See [hardware_design.md](./hardware_design.md) for the complete schematic and component list.
 
 ## Architecture
 
