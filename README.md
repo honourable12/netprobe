@@ -25,16 +25,21 @@ NetProbe is a lightweight, decentralized monitoring tool built in Rust. It runs 
 
 ## Prerequisites
 
-- **OS**: Windows (requires `netsh` utility).
+- **OS**: 
+  - **Windows**: Requires `netsh` utility (built-in).
+  - **Linux**: Requires `nmcli` (NetworkManager) for WiFi monitoring.
 - **WiFi**: A WiFi interface must be active and connected.
 - **Rust**: [Rustup](https://rustup.rs/) (stable toolchain).
 
 ## Getting Started
 
 ### 1. Clone and Build
-```powershell
+```bash
+# Clone the repository
 git clone <repo-url>
 cd netprobe
+
+# Build for your platform
 cargo build --release
 ```
 
@@ -45,8 +50,12 @@ On the first run, a `config.json` file will be created in the application direct
 - `moving_average_window`: Number of samples to use for the signal average (default: 3).
 
 ### 3. Run
-```powershell
+```bash
+# Windows
 ./target/release/netprobe.exe
+
+# Linux
+./target/release/netprobe
 ```
 *Press **'q'** at any time to quit the TUI.*
 

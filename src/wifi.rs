@@ -11,6 +11,7 @@ pub struct WifiStats {
     pub channel: u32,
 }
 
+#[cfg(target_os = "windows")]
 pub fn get_interface_data() -> anyhow::Result<WifiStats> {
     let output = Command::new("netsh")
         .args(["wlan", "show", "interfaces"])
@@ -57,3 +58,46 @@ pub fn get_interface_data() -> anyhow::Result<WifiStats> {
         channel,
     })
 }
+
+#[cfg(target_os = "linux")]
+pub fn get_interface_data() -> anyhow::Result<WifiStats> {
+    let output = Command::new("nmcli")
+        .args(["-t", "-f", "ACTIVE,SIGNAL,RATE,BSSID,CHAN", "dev", "wifi"])
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    let line_regex = Regex::new(r"^yes:(\d+):([^:]+):(.+):(\d+)$")?;
+    
+    for line in stdout.lines() {
+        if let Some(caps) = line_regex.captures(line) {
+            let signal = caps.get(1).map(|m| m.as_str().parse::<u32>().unwrap_or(0)).unwrap_or(0);
+            let rate_str = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let bssid = caps.get(3).map(|m| m.as_str().replace("\\", "")).unwrap_or_else(|| "Unknown".to_string());
+            let channel = caps.get(4).map(|m| m.as_str().parse::<u32>().unwrap_or(0)).unwrap_or(0);
+
+            let rate_regex = Regex::new(r"([\d.]+)")?;
+            let rate = rate_regex.captures(rate_str)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().parse::<f32>().unwrap_or(0.0))
+                .unwrap_or(0.0);
+
+            return Ok(WifiStats {
+                signal,
+                receive_rate: rate,
+                transmit_rate: rate,
+                bssid,
+                channel,
+            });
+        }
+    }
+
+    Err(anyhow::anyhow!("No active WiFi connection found via nmcli"))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub fn get_interface_data() -> anyhow::Result<WifiStats> {
+    Err(anyhow::anyhow!("Platform not supported for WiFi monitoring"))
+}
+
+

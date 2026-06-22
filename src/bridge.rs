@@ -3,7 +3,6 @@ use std::io::Error;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// The structure of the data coming from the ESP32 Sentinel
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SensorData {
     pub dev: String,
@@ -15,7 +14,7 @@ pub struct SensorData {
 pub struct RfAlert {
     pub ch: u8,
     pub pwr: i16,
-    pub r#type: String, // Use r# for reserved keywords
+    pub r#type: String,
 }
 
 pub struct UdpBridge {
