@@ -138,13 +138,14 @@ pub async fn run_network(
                                 channel: stats.channel,
                                 timestamp: Utc::now().timestamp(),
                             };
-                            let msg = GossipMessage::WifiAlert(alert);
+                            let msg = GossipMessage::WifiAlert(alert.clone());
                             let msg_json = serde_json::to_string(&msg)?;
                             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_json.as_bytes()) {
                                 let _ = tx.send(NetworkEvent::Log(format!("Gossipsub publish error: {:?}", e)));
                             } else {
                                 let _ = tx.send(NetworkEvent::Log(format!("Published Alert: Signal drop detected (Avg {:.1}%)", avg_signal)));
                             }
+                            let _ = tx.send(NetworkEvent::AlertReceived(alert));
                         }
                     }
                     Err(e) => {
@@ -154,6 +155,16 @@ pub async fn run_network(
             }
             cmd = cmd_rx.recv() => {
                 if let Some(NetworkCommand::PublishHardwareAlert { dev, ch, pwr, r#type }) = cmd {
+                    let local_alert = ProbeAlert {
+                        peer_id: format!("HW:{}", dev),
+                        signal: pwr.unsigned_abs() as u32,
+                        avg_signal: pwr as f32,
+                        bssid: r#type.clone(),
+                        channel: ch as u32,
+                        timestamp: Utc::now().timestamp(),
+                    };
+                    let _ = tx.send(NetworkEvent::AlertReceived(local_alert));
+
                     let msg = GossipMessage::HardwareAlert {
                         dev,
                         ch,
